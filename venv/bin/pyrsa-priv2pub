@@ -1,4 +1,4 @@
-#!/Users/jonathanhernandez/Documents/Villa/backend-encuestas/venv/bin/python3
+#!/Users/jonathanhernandez/Documents/Villa/backend-encuestas/venv/bin/python3.11
 # -*- coding: utf-8 -*-
 import re
 import sys
