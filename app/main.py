@@ -34,6 +34,11 @@ app.add_middleware(
     allow_methods=["*"], allow_headers=["*"],
 )
 
+@app.get("/")
+def root():
+    return {"status": "🟢 Backend activo. Ve a /docs para ver la documentación."}
+
+
 class StudentInput(BaseModel):
     Student_ID: int
     Age: int
