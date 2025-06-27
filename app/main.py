@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Union
 import pandas as pd
@@ -47,7 +47,7 @@ class StudentInput(BaseModel):
     Country: str
     Avg_Daily_Usage_Hours: float
     Most_Used_Platform: str
-    Conflicts_Over_Social_Media: int
+    Conflicts_Over_Social_Media: int = Field(..., ge=0, le=10)
     Sleep_Hours_Per_Night: float
     Relationship_Status: Union[str, int]
 
