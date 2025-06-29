@@ -63,6 +63,7 @@ class AskRequest(BaseModel):
 def predict(data: PredictionRequest):
     input_data = data.model_dump()
 
+    # === Cargar artefactos y dataset original ===
     df_original = pd.read_excel(excel_path)
     columnas_validas = df_original.columns
 
@@ -73,7 +74,7 @@ def predict(data: PredictionRequest):
 
     df = pd.DataFrame([input_data])
 
-    # === Preprocesamiento: codificación y escalado ===
+    # === Preprocesamiento: limpieza, codificación y escalado ===
     for col in df.columns:
         if df[col].dtype == object:
             df[col] = df[col].astype(str).str.lower().str.strip()
@@ -90,7 +91,12 @@ def predict(data: PredictionRequest):
         if col in scalers:
             df[col] = scalers[col].transform(df[[col]])
 
-    # === Predicciones ===
+    # === Agregar variables derivadas ===
+    df["Is_Overuser"] = (df.get("Avg_Daily_Usage_Hours", 0) > 4).astype(int)
+    df["Sleeps_Enough"] = (df.get("Sleep_Hours_Per_Night", 0) >= 7).astype(int)
+    df["Usage_Conflict_Ratio"] = df.get("Conflicts_Over_Social_Media", 0) / (df.get("Avg_Daily_Usage_Hours", 0) + 1)
+
+    # === Predicción de todos los modelos ===
     pred_principales = {}
     for target in models:
         cols = model_columns[target]
@@ -101,20 +107,19 @@ def predict(data: PredictionRequest):
 
         pred = models[target].predict(df_target[cols])[0]
 
-        if target in clasificacion_discreta:
-            pred_principales[target] = int(round(pred))
-        else:
-            if target in scalers:
-                try:
-                    pred = scalers[target].inverse_transform([[pred]])[0][0]
-                except Exception as e:
-                    print(f"❌ Error al aplicar inverse_transform en '{target}': {e}")
-            pred_principales[target] = float(round(pred, 2))
+        # Si tiene scaler inverso, desnormalizar
+        if target in scalers:
+            try:
+                pred = scalers[target].inverse_transform([[pred]])[0][0]
+            except Exception as e:
+                print(f"❌ Error al aplicar inverse_transform en '{target}': {e}")
+
+        pred_principales[target] = float(round(pred, 2))
 
     # === Guardar predicciones clave al Excel ===
     nueva_fila = input_data.copy()
-    for col in ["Mental_Health_Score", "Addicted_Score", "Affects_Academic_Performance"]:
-        nueva_fila[col] = pred_principales.get(col)
+    for col in pred_principales:
+        nueva_fila[col] = pred_principales[col]
 
     for col in columnas_validas:
         if col not in nueva_fila:
@@ -125,8 +130,9 @@ def predict(data: PredictionRequest):
 
     return {
         "predictions": pred_principales,
-        "message": "✅ Predicción completada con resultados principales precargados."
+        "message": "✅ Predicción completada con todas las variables consideradas."
     }
+
 
 
 
