@@ -116,11 +116,12 @@ def predict(data: PredictionRequest):
 
         pred_principales[target] = float(round(pred, 2))
 
-    # === Guardar predicciones clave al Excel ===
+    # === Guardar solo las predicciones principales al Excel ===
     nueva_fila = input_data.copy()
-    for col in pred_principales:
-        nueva_fila[col] = pred_principales[col]
+    for col in ["Mental_Health_Score", "Addicted_Score", "Affects_Academic_Performance"]:
+        nueva_fila[col] = pred_principales.get(col)
 
+    # Asegurarse de que todas las columnas estén presentes
     for col in columnas_validas:
         if col not in nueva_fila:
             nueva_fila[col] = None
@@ -130,11 +131,8 @@ def predict(data: PredictionRequest):
 
     return {
         "predictions": pred_principales,
-        "message": "✅ Predicción completada con todas las variables consideradas."
+        "message": "✅ Predicción completada con las variables principales correctamente almacenadas."
     }
-
-
-
 
 @app.post("/ask")
 def ask_question_post(data: AskRequest):
