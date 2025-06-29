@@ -12,7 +12,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
 from fastapi.responses import FileResponse
 
-
 # === CONFIGURACIÓN ===
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 excel_path = os.path.join(BASE_DIR, "StudentsSocial.xlsx")
@@ -59,45 +58,6 @@ class AskRequest(BaseModel):
     student_id: int
     question: str
 
-def reentrenar_modelos():
-    df = pd.read_excel(excel_path)
-
-    for col in df.select_dtypes(include='object').columns:
-        df[col] = df[col].astype(str).str.strip().str.lower()
-
-    df.dropna(subset=principales, inplace=True)
-
-    label_encoders = {}
-    scalers = {}
-
-    for col in df.select_dtypes(include='object').columns:
-        le = LabelEncoder()
-        df[col] = le.fit_transform(df[col])
-        label_encoders[col] = le
-
-    for col in df.select_dtypes(include='number').columns:
-        if col not in ['Student_ID'] + principales:
-            scaler = StandardScaler()
-            df[col] = scaler.fit_transform(df[[col]])
-            scalers[col] = scaler
-
-    models = {}
-    model_columns = {}
-
-    for target in principales:
-        X = df.drop(columns=[target])
-        y = df[target]
-
-        model = RandomForestRegressor(n_estimators=100, random_state=42)
-        model.fit(X, y)
-
-        models[target] = model
-        model_columns[target] = X.columns.tolist()
-
-    joblib.dump(models, os.path.join(BASE_DIR, "modelos_entrenados.pkl"))
-    joblib.dump(label_encoders, os.path.join(BASE_DIR, "encoders.pkl"))
-    joblib.dump(model_columns, os.path.join(BASE_DIR, "columnas_modelos.pkl"))
-    joblib.dump(scalers, os.path.join(BASE_DIR, "scalers.pkl"))
 
 @app.post("/predict")
 def predict(data: PredictionRequest):
@@ -112,27 +72,46 @@ def predict(data: PredictionRequest):
     scalers = joblib.load(os.path.join(BASE_DIR, "scalers.pkl"))
 
     df = pd.DataFrame([input_data])
+
+    # === Preprocesamiento: codificación y escalado ===
     for col in df.columns:
         if df[col].dtype == object:
-            df[col] = df[col].astype(str).str.lower()
+            df[col] = df[col].astype(str).str.lower().str.strip()
+
         if col in encoders:
-            try:
-                df[col] = encoders[col].transform(df[col])
-            except:
-                df[col] = 0
+            le = encoders[col]
+            val = df[col].iloc[0]
+            if val in le.classes_:
+                df[col] = le.transform([val])
+            else:
+                print(f"⚠️ Valor desconocido para '{col}': {val}. Se asigna 0.")
+                df[col] = [0]
+
         if col in scalers:
             df[col] = scalers[col].transform(df[[col]])
 
+    # === Predicciones ===
     pred_principales = {}
     for target in models:
         cols = model_columns[target]
+        df_target = df.copy()
         for col in cols:
-            if col not in df.columns:
-                df[col] = 0
-        pred = models[target].predict(df[cols])[0]
-        pred_principales[target] = int(round(pred)) if target in clasificacion_discreta else float(round(pred, 2))
+            if col not in df_target.columns:
+                df_target[col] = 0
 
-    # Guardar solo ciertas predicciones
+        pred = models[target].predict(df_target[cols])[0]
+
+        if target in clasificacion_discreta:
+            pred_principales[target] = int(round(pred))
+        else:
+            if target in scalers:
+                try:
+                    pred = scalers[target].inverse_transform([[pred]])[0][0]
+                except Exception as e:
+                    print(f"❌ Error al aplicar inverse_transform en '{target}': {e}")
+            pred_principales[target] = float(round(pred, 2))
+
+    # === Guardar predicciones clave al Excel ===
     nueva_fila = input_data.copy()
     for col in ["Mental_Health_Score", "Addicted_Score", "Affects_Academic_Performance"]:
         nueva_fila[col] = pred_principales.get(col)
@@ -144,8 +123,6 @@ def predict(data: PredictionRequest):
     df_nuevo = pd.concat([df_original, pd.DataFrame([nueva_fila])], ignore_index=True)
     df_nuevo.to_excel(excel_path, index=False)
 
-    reentrenar_modelos()
-
     return {
         "predictions": pred_principales,
         "message": "✅ Predicción completada con resultados principales precargados."
@@ -155,6 +132,9 @@ def predict(data: PredictionRequest):
 
 @app.post("/ask")
 def ask_question_post(data: AskRequest):
+    import warnings
+    warnings.filterwarnings("ignore")
+
     student_id = data.student_id
     pregunta = data.question.strip().lower()
 
@@ -196,82 +176,146 @@ def ask_question_post(data: AskRequest):
     }
 
     preguntas_entrenadas = {
-        "¿cómo está mi salud mental?": ["Mental_Health_Score"],
-        "¿tengo conflictos por redes sociales?": ["Conflicts_Over_Social_Media"],
-        "¿soy adicto a las redes sociales?": ["Addicted_Score"],
+        "¿cómo está mi salud mental?": ["Mental_Health_Score", "Conflicts_Over_Social_Media", "Addicted_Score"],
+        "¿tengo conflictos por redes sociales?": ["Conflicts_Over_Social_Media", "Addicted_Score", "Avg_Daily_Usage_Hours"],
+        "¿soy adicto a las redes sociales?": ["Addicted_Score", "Avg_Daily_Usage_Hours", "Sleep_Hours_Per_Night"],
         "¿cuánto uso las redes sociales?": ["Avg_Daily_Usage_Hours"],
-        "¿duermo lo suficiente?": ["Sleep_Hours_Per_Night"],
-        "¿cómo afecta mi rendimiento académico?": ["Affects_Academic_Performance"],
+        "¿es demasiado mi tiempo en redes?": ["Avg_Daily_Usage_Hours"],
+        "¿duermo lo suficiente?": ["Sleep_Hours_Per_Night", "Mental_Health_Score"],
+        "¿cómo afecta mi rendimiento académico?": ["Affects_Academic_Performance", "Addicted_Score"],
         "¿cómo será mi próxima relación?": ["Relationship_Status", "Mental_Health_Score", "Addicted_Score"],
         "¿mi salud emocional está bien?": ["Mental_Health_Score", "Conflicts_Over_Social_Media", "Sleep_Hours_Per_Night"],
         "¿estoy equilibrado emocionalmente?": ["Mental_Health_Score", "Addicted_Score", "Sleep_Hours_Per_Night"],
         "¿mi relación me afecta?": ["Relationship_Status", "Affects_Academic_Performance", "Mental_Health_Score"]
     }
 
+    # Similaridad
     vectorizer = TfidfVectorizer().fit(preguntas_entrenadas.keys())
     vectores = vectorizer.transform(list(preguntas_entrenadas.keys()) + [pregunta])
     similitudes = cosine_similarity(vectores[-1], vectores[:-1])[0]
     mejor_index = int(np.argmax(similitudes))
     pregunta_base = list(preguntas_entrenadas.keys())[mejor_index]
     targets = preguntas_entrenadas[pregunta_base]
-    target = targets[0]
 
-    predicciones = []
-    for t in targets:
-        model = models[t]
-        cols = model_columns[t]
+    resultados = []
+
+    for target in targets:
+        if target not in models:
+            continue
+
+        model = models[target]
+        cols = model_columns[target]
+
         for col in cols:
             if col not in fila.columns:
                 fila[col] = 0
-        pred = model.predict(fila[cols])[0]
-        pred_format = int(round(pred)) if t in clasificacion_discreta else float(round(pred, 2))
-        predicciones.append((t, pred_format))
 
-    valor_usuario = predicciones[0][1]
-
-    if target in df.columns:
         try:
-            promedio_general = pd.to_numeric(df[target], errors='coerce').dropna().mean()
-            promedio_general = round(promedio_general, 2)
+            pred = model.predict(fila[cols])[0]
+            pred = int(round(pred)) if target in ["Conflicts_Over_Social_Media", "Addicted_Score", "Mental_Health_Score"] else float(round(pred, 2))
         except:
-            promedio_general = None
-    else:
-        promedio_general = None
+            continue
 
-    ideal = promedios_ideales.get(target, promedio_general)
+        promedio = None
+        if target in df.columns:
+            try:
+                promedio = pd.to_numeric(df[target], errors='coerce').dropna().mean()
+                promedio = round(promedio, 2)
+            except:
+                promedio = None
 
-    comparacion = None
-    if isinstance(valor_usuario, (int, float)) and isinstance(ideal, (int, float)):
-        if valor_usuario > ideal + 1:
-            comparacion = "por encima de lo recomendado"
-        elif valor_usuario < ideal - 1:
-            comparacion = "por debajo de lo recomendado"
-        else:
-            comparacion = "dentro del rango saludable"
+        ideal = promedios_ideales.get(target, promedio)
 
-    analisis = f"📊 Según tus respuestas, {etiquetas_humanas.get(target, target)} es de {valor_usuario}."
-    if promedio_general is not None and comparacion:
-        analisis += f" El promedio general es {promedio_general}. Estás {comparacion}."
+        comparacion = None
+        if isinstance(pred, (int, float)) and isinstance(ideal, (int, float)):
+            if pred > ideal + 1:
+                comparacion = "por encima de lo esperado"
+            elif pred < ideal - 1:
+                comparacion = "por debajo de lo esperado"
+            else:
+                comparacion = "en el rango saludable"
+
+        texto = f"🔍 Tu nivel de {etiquetas_humanas.get(target, target)} es **{pred}**."
+        if promedio is not None:
+            texto += f" El promedio general es {promedio}, estás {comparacion}."
+
+        resultados.append({
+            "target": target,
+            "etiqueta": etiquetas_humanas.get(target, target),
+            "valor_usuario": pred,
+            "promedio_general": promedio,
+            "comparacion": comparacion,
+            "analisis": texto
+        })
+
+    # Generador de conclusión solo basado en los targets relevantes
+    def construir_respuesta_final(pregunta, resultados, targets_relacionados):
+        conclusiones = []
+
+        for res in resultados:
+            if res["target"] not in targets_relacionados:
+                continue
+
+            etiqueta = res["etiqueta"].lower()
+            comparacion = res["comparacion"]
+
+            if "salud mental" in etiqueta:
+                if "por debajo" in comparacion:
+                    conclusiones.append("tu salud mental podría estar deteriorada")
+                else:
+                    conclusiones.append("tu salud mental es estable")
+            elif "adicción" in etiqueta:
+                if "por encima" in comparacion:
+                    conclusiones.append("muestras señales de adicción")
+                else:
+                    conclusiones.append("no presentas señales de adicción")
+            elif "conflicto" in etiqueta:
+                if "por encima" in comparacion:
+                    conclusiones.append("hay conflictos sociales presentes")
+                else:
+                    conclusiones.append("no se observan conflictos sociales")
+            elif "rendimiento" in etiqueta:
+                if "por debajo" in comparacion:
+                    conclusiones.append("tu rendimiento académico podría estar afectado")
+                else:
+                    conclusiones.append("tu rendimiento académico es adecuado")
+            elif "sueño" in etiqueta:
+                if "por debajo" in comparacion:
+                    conclusiones.append("tienes falta de sueño")
+                else:
+                    conclusiones.append("tus horas de sueño son saludables")
+            elif "uso" in etiqueta:
+                if "por encima" in comparacion:
+                    conclusiones.append("usas redes sociales en exceso")
+                elif "por debajo" in comparacion:
+                    conclusiones.append("usas redes sociales menos que el promedio")
+                else:
+                    conclusiones.append("tu uso de redes es moderado")
+
+        if not conclusiones:
+            return "No se pudo generar una conclusión clara."
+
+        return "En resumen, " + ", ".join(conclusiones) + "."
+
+    respuesta_final = construir_respuesta_final(pregunta, resultados, targets)
 
     return {
         "student_id": student_id,
-        "question": data.question,
-        "target": target,
-        "valor_usuario": valor_usuario,
-        "promedio_general": promedio_general,
-        "comparacion": comparacion,
-        "analisis": analisis
+        "pregunta_original": data.question,
+        "pregunta_interpretada": pregunta_base,
+        "resultados": resultados,
+        "respuesta_final": respuesta_final
     }
+
 
 
 @app.get("/descargar-excel")
 def descargar_excel():
-    ruta = excel_path  # usa el mismo path que ya usas para guardar
-    if not os.path.exists(ruta):
+    if not os.path.exists(excel_path):
         return {"error": "❌ No hay respuestas registradas aún"}
     
     return FileResponse(
-        ruta,
+        excel_path,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename="respuestas_encuesta.xlsx"
     )
