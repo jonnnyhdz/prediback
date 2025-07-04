@@ -96,32 +96,60 @@ def predict(data: PredictionRequest):
     df["Sleeps_Enough"] = (df.get("Sleep_Hours_Per_Night", 0) >= 7).astype(int)
     df["Usage_Conflict_Ratio"] = df.get("Conflicts_Over_Social_Media", 0) / (df.get("Avg_Daily_Usage_Hours", 0) + 1)
 
-    # === Predicción de todos los modelos ===
     pred_principales = {}
-    for target in models:
+
+    # === 1. Predecir Mental_Health_Score y Addicted_Score ===
+    for target in ["Mental_Health_Score", "Addicted_Score"]:
         cols = model_columns[target]
-        df_target = df.copy()
+        df_input = df[cols].copy() if all(col in df.columns for col in cols) else df.copy()
         for col in cols:
-            if col not in df_target.columns:
-                df_target[col] = 0
-
-        pred = models[target].predict(df_target[cols])[0]
-
-        # Si tiene scaler inverso, desnormalizar
+            if col not in df_input.columns:
+                df_input[col] = 0
+        pred = models[target].predict(df_input[cols])[0]
         if target in scalers:
             try:
                 pred = scalers[target].inverse_transform([[pred]])[0][0]
-            except Exception as e:
-                print(f"❌ Error al aplicar inverse_transform en '{target}': {e}")
+            except:
+                pass
+        pred_principales[target] = float(round(pred, 2))
+        df[target] = pred_principales[target]  # Agregar al dataframe para usarlo después
 
+    # === 2. Predecir Affects_Academic_Performance usando los anteriores ===
+    target = "Affects_Academic_Performance"
+    cols = model_columns[target]
+    df_input = df[cols].copy() if all(col in df.columns for col in cols) else df.copy()
+    for col in cols:
+        if col not in df_input.columns:
+            df_input[col] = 0
+    pred = models[target].predict(df_input[cols])[0]
+    if target in scalers:
+        try:
+            pred = scalers[target].inverse_transform([[pred]])[0][0]
+        except:
+            pass
+    pred_principales[target] = float(round(pred, 2))
+
+    # === 3. Predicciones adicionales (si hay más modelos)
+    for target in models:
+        if target in pred_principales:
+            continue  # Ya fue predicho
+        cols = model_columns[target]
+        df_input = df.copy()
+        for col in cols:
+            if col not in df_input.columns:
+                df_input[col] = 0
+        pred = models[target].predict(df_input[cols])[0]
+        if target in scalers:
+            try:
+                pred = scalers[target].inverse_transform([[pred]])[0][0]
+            except:
+                pass
         pred_principales[target] = float(round(pred, 2))
 
-    # === Guardar solo las predicciones principales al Excel ===
+    # === Guardar nueva fila ===
     nueva_fila = input_data.copy()
-    for col in ["Mental_Health_Score", "Addicted_Score", "Affects_Academic_Performance"]:
-        nueva_fila[col] = pred_principales.get(col)
-
-    # Asegurarse de que todas las columnas estén presentes
+    for col in pred_principales:
+        nueva_fila[col] = pred_principales[col]
     for col in columnas_validas:
         if col not in nueva_fila:
             nueva_fila[col] = None
@@ -131,7 +159,8 @@ def predict(data: PredictionRequest):
 
     return {
         "predictions": pred_principales,
-        "message": "✅ Predicción completada con las variables principales correctamente almacenadas."
+        "variables_por_modelo": model_columns,
+        "message": "✅ Predicción completada correctamente sin inferencia cruzada."
     }
 
 @app.post("/ask")
