@@ -170,42 +170,41 @@ def ask_question_post(data: AskRequest):
 
     student_id = data.student_id
     pregunta = data.question.strip().lower()
-
     df = pd.read_excel(excel_path)
-    fila = df[df["Student_ID"] == student_id].copy()
+
+    fila = df[df["Student_ID"] == student_id].copy().iloc[[-1]]
 
     if fila.empty:
-        return {"error": f"❌ No se encontró ningún registro con Student_ID={student_id}"}
+        return {"error": f"No se encontró ningún registro con Student_ID={student_id}"}
 
-    encoders = joblib.load(os.path.join(BASE_DIR, "encoders.pkl"))
-    models = joblib.load(os.path.join(BASE_DIR, "modelos_entrenados.pkl"))
-    model_columns = joblib.load(os.path.join(BASE_DIR, "columnas_modelos.pkl"))
-    scalers = joblib.load(os.path.join(BASE_DIR, "scalers.pkl"))
-
-    for col in fila.columns:
-        if fila[col].dtype == object:
-            fila[col] = fila[col].astype(str).str.lower()
-        if col in encoders:
-            try:
-                fila[col] = encoders[col].transform(fila[col])
-            except:
-                fila[col] = 0
-        if col in scalers:
-            fila[col] = scalers[col].transform(fila[[col]])
+    valores_predichos = {
+        "Mental_Health_Score": float(fila["Mental_Health_Score"].values[0]),
+        "Addicted_Score": float(fila["Addicted_Score"].values[0]),
+        "Conflicts_Over_Social_Media": float(fila["Conflicts_Over_Social_Media"].values[0]),
+        "Sleep_Hours_Per_Night": float(fila["Sleep_Hours_Per_Night"].values[0]),
+        "Avg_Daily_Usage_Hours": float(fila["Avg_Daily_Usage_Hours"].values[0]),
+        "Affects_Academic_Performance": float(fila["Affects_Academic_Performance"].values[0]),
+        "Relationship_Status": float(fila["Relationship_Status"].values[0])
+    }
 
     etiquetas_humanas = {
         "Mental_Health_Score": "salud mental",
-        "Addicted_Score": "adicción a redes",
-        "Conflicts_Over_Social_Media": "conflictos sociales",
-        "Avg_Daily_Usage_Hours": "uso de redes sociales",
-        "Relationship_Status": "estado de relación",
+        "Addicted_Score": "uso de redes sociales",
+        "Conflicts_Over_Social_Media": "conflictos por redes",
+        "Avg_Daily_Usage_Hours": "tiempo que pasas en redes",
         "Sleep_Hours_Per_Night": "horas de sueño",
-        "Affects_Academic_Performance": "rendimiento escolar"
+        "Affects_Academic_Performance": "afectación al rendimiento escolar",
+        "Relationship_Status": "estado emocional por tu relación"
     }
 
-    promedios_ideales = {
+    ideales = {
         "Sleep_Hours_Per_Night": 8.0,
         "Avg_Daily_Usage_Hours": 3.0
+    }
+
+    promedios = {
+        k: round(pd.to_numeric(df[k], errors='coerce').dropna().mean(), 2)
+        for k in valores_predichos
     }
 
     preguntas_entrenadas = {
@@ -222,7 +221,7 @@ def ask_question_post(data: AskRequest):
         "¿mi relación me afecta?": ["Relationship_Status", "Affects_Academic_Performance", "Mental_Health_Score"]
     }
 
-    # Similaridad
+    # Interpretar pregunta
     vectorizer = TfidfVectorizer().fit(preguntas_entrenadas.keys())
     vectores = vectorizer.transform(list(preguntas_entrenadas.keys()) + [pregunta])
     similitudes = cosine_similarity(vectores[-1], vectores[:-1])[0]
@@ -230,116 +229,119 @@ def ask_question_post(data: AskRequest):
     pregunta_base = list(preguntas_entrenadas.keys())[mejor_index]
     targets = preguntas_entrenadas[pregunta_base]
 
-    resultados = []
+    frases = []
+    recomendaciones = []
 
+    target_principal = targets[0]
+    valor_principal = valores_predichos[target_principal]
+    promedio_principal = promedios[target_principal]
+    etiqueta_principal = etiquetas_humanas[target_principal]
+
+    # Porcentaje estimado solo si es aplicable
+    porcentaje_estimado = None
+    if target_principal in ["Mental_Health_Score", "Addicted_Score"]:
+        porcentaje_estimado = int((valor_principal / 10) * 100)
+    elif target_principal == "Affects_Academic_Performance":
+        porcentaje_estimado = int((valor_principal / 10) * 100)  # Pero se interpreta como % de afectación
+
+    # Frases y recomendaciones
     for target in targets:
-        if target not in models:
-            continue
+        valor = valores_predichos[target]
+        etiqueta = etiquetas_humanas[target]
 
-        model = models[target]
-        cols = model_columns[target]
-
-        for col in cols:
-            if col not in fila.columns:
-                fila[col] = 0
-
-        try:
-            pred = model.predict(fila[cols])[0]
-            pred = int(round(pred)) if target in ["Conflicts_Over_Social_Media", "Addicted_Score", "Mental_Health_Score"] else float(round(pred, 2))
-        except:
-            continue
-
-        promedio = None
-        if target in df.columns:
-            try:
-                promedio = pd.to_numeric(df[target], errors='coerce').dropna().mean()
-                promedio = round(promedio, 2)
-            except:
-                promedio = None
-
-        ideal = promedios_ideales.get(target, promedio)
-
-        comparacion = None
-        if isinstance(pred, (int, float)) and isinstance(ideal, (int, float)):
-            if pred > ideal + 1:
-                comparacion = "por encima de lo esperado"
-            elif pred < ideal - 1:
-                comparacion = "por debajo de lo esperado"
+        if target == "Mental_Health_Score":
+            if valor >= 7:
+                frases.append("Tu salud mental se ve bastante estable. Eso es algo que vale la pena cuidar.")
+            elif valor >= 4:
+                frases.append("Últimamente podrías estar cargando más de lo que parece. Está bien tomarse un respiro.")
+                recomendaciones.append("Habla con alguien de confianza o dedica tiempo a actividades que disfrutes.")
             else:
-                comparacion = "en el rango saludable"
+                frases.append("Tu salud mental podría necesitar más atención. No estás solo en esto.")
+                recomendaciones.append("Busca apoyo emocional, incluso algo tan simple como una charla ayuda mucho.")
 
-        texto = f"🔍 Tu nivel de {etiquetas_humanas.get(target, target)} es **{pred}**."
-        if promedio is not None:
-            texto += f" El promedio general es {promedio}, estás {comparacion}."
+        elif target == "Addicted_Score":
+            if valor >= 7:
+                frases.append("Pareces estar muy pegado a las redes. Eso podría quitarte tiempo valioso.")
+                recomendaciones.append("Fija momentos sin pantalla durante tu día. Verás cómo mejora tu enfoque.")
+            elif valor >= 4:
+                frases.append("Tu relación con las redes es intermedia. Observa si a veces te desconectan más de lo que te conectan.")
+            else:
+                frases.append("Tienes un uso bastante equilibrado de redes sociales. ¡Eso es genial!")
 
-        resultados.append({
-            "target": target,
-            "etiqueta": etiquetas_humanas.get(target, target),
-            "valor_usuario": pred,
-            "promedio_general": promedio,
-            "comparacion": comparacion,
-            "analisis": texto
-        })
+        elif target == "Conflicts_Over_Social_Media":
+            if valor >= 6:
+                frases.append("Has vivido varios roces en redes. Tal vez sería bueno evitar discusiones digitales.")
+                recomendaciones.append("Piensa dos veces antes de responder en caliente. Tu paz vale más.")
+            elif valor >= 3:
+                frases.append("Has tenido algunos conflictos, pero nada grave. Aún así, cuida tu energía.")
+            else:
+                frases.append("Casi no tienes problemas por redes. ¡Eso habla bien de cómo las manejas!")
 
-    # Generador de conclusión solo basado en los targets relevantes
-    def construir_respuesta_final(pregunta, resultados, targets_relacionados):
-        conclusiones = []
+        elif target == "Sleep_Hours_Per_Night":
+            if valor >= 7.5:
+                frases.append("Duermes lo suficiente, y eso es clave para sentirte bien.")
+            elif valor >= 6:
+                frases.append("Tus horas de sueño están algo justas. Un poco más de descanso podría ayudarte.")
+                recomendaciones.append("Evita usar el celular justo antes de dormir.")
+            else:
+                frases.append("Duermes muy poco, y eso puede pasarte factura en el día.")
+                recomendaciones.append("Intenta acostarte más temprano, incluso solo 30 minutos antes puede marcar la diferencia.")
 
-        for res in resultados:
-            if res["target"] not in targets_relacionados:
-                continue
+        elif target == "Avg_Daily_Usage_Hours":
+            if valor > 5:
+                frases.append("Pasas bastante tiempo en redes. Quizás podrías darte más espacios offline.")
+                recomendaciones.append("Reserva una hora al día para desconectarte totalmente.")
+            elif valor > 3:
+                frases.append("Tu uso de redes es algo elevado. Vale la pena monitorearlo.")
+            else:
+                frases.append("Tienes un uso de redes muy controlado. ¡Sigue así!")
 
-            etiqueta = res["etiqueta"].lower()
-            comparacion = res["comparacion"]
+        elif target == "Affects_Academic_Performance":
+            if valor >= 7:
+                frases.append("Parece que el uso de redes sociales está afectando bastante tus estudios.")
+                recomendaciones.append("Intenta desconectarte al momento de estudiar y crear rutinas sin pantallas.")
+            elif valor >= 4:
+                frases.append("Podría estar costándote concentrarte. Quizás valga la pena ajustar horarios.")
+                recomendaciones.append("Evita tener el celular cerca cuando estudies.")
+            else:
+                frases.append("Las redes no parecen interferir mucho en tu rendimiento. ¡Bien hecho!")
 
-            if "salud mental" in etiqueta:
-                if "por debajo" in comparacion:
-                    conclusiones.append("tu salud mental podría estar deteriorada")
-                else:
-                    conclusiones.append("tu salud mental es estable")
-            elif "adicción" in etiqueta:
-                if "por encima" in comparacion:
-                    conclusiones.append("muestras señales de adicción")
-                else:
-                    conclusiones.append("no presentas señales de adicción")
-            elif "conflicto" in etiqueta:
-                if "por encima" in comparacion:
-                    conclusiones.append("hay conflictos sociales presentes")
-                else:
-                    conclusiones.append("no se observan conflictos sociales")
-            elif "rendimiento" in etiqueta:
-                if "por debajo" in comparacion:
-                    conclusiones.append("tu rendimiento académico podría estar afectado")
-                else:
-                    conclusiones.append("tu rendimiento académico es adecuado")
-            elif "sueño" in etiqueta:
-                if "por debajo" in comparacion:
-                    conclusiones.append("tienes falta de sueño")
-                else:
-                    conclusiones.append("tus horas de sueño son saludables")
-            elif "uso" in etiqueta:
-                if "por encima" in comparacion:
-                    conclusiones.append("usas redes sociales en exceso")
-                elif "por debajo" in comparacion:
-                    conclusiones.append("usas redes sociales menos que el promedio")
-                else:
-                    conclusiones.append("tu uso de redes es moderado")
+        elif target == "Relationship_Status":
+            if valor >= 7:
+                frases.append("Tu relación emocional parece ser un apoyo positivo.")
+            elif valor >= 4:
+                frases.append("No parece afectarte mucho tu relación. Pero si algo te inquieta, siempre es bueno hablar.")
+            else:
+                frases.append("Tal vez tu situación sentimental esté influyendo en cómo te sientes día a día.")
+                recomendaciones.append("No olvides cuidarte emocionalmente, sobre todo si estás pasando por algo difícil.")
 
-        if not conclusiones:
-            return "No se pudo generar una conclusión clara."
+    # Redactar resumen
+    resumen = f"{frases[0]}"
+    if porcentaje_estimado is not None:
+        resumen += f" Según lo que vimos, tu nivel de {etiqueta_principal} está alrededor del {porcentaje_estimado}%."
 
-        return "En resumen, " + ", ".join(conclusiones) + "."
+    if len(frases) > 1:
+        resumen += " " + " ".join(frases[1:])
 
-    respuesta_final = construir_respuesta_final(pregunta, resultados, targets)
+    if recomendaciones:
+        resumen += "\n\n📌 Consejos útiles que podrían ayudarte:\n- " + "\n- ".join(recomendaciones)
+
+    resumen += "\n\nGracias por confiar en este espacio. Las respuestas fueron analizadas por modelos de IA que, como una brújula, te orientan considerando todo tu contexto para darte una respuesta útil y cercana."
 
     return {
         "student_id": student_id,
         "pregunta_original": data.question,
         "pregunta_interpretada": pregunta_base,
-        "resultados": resultados,
-        "respuesta_final": respuesta_final
+        "resultados": [{
+            "target": target_principal,
+            "etiqueta": etiqueta_principal,
+            "valor_usuario": valor_principal,
+            "promedio_general": promedio_principal,
+            "comparacion": "",
+            "analisis": ""
+        }],
+        "respuesta_final": resumen
     }
-
 
 
 @app.get("/descargar-excel")
